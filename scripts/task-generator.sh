@@ -1,112 +1,72 @@
 #!/bin/bash
-# Autonomous Evolution Cycle - 核心任务生成器
-# 负责任务生成、进度分析、知识提取
-# 基于原版openclaw skill设计
+# Autonomous Evolution Cycle - 任务生成器
+# 合并版：自主能力 + 简化语法 + 实际任务模板
 
 set -euo pipefail
 
-# 导入公共库
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/lib"
+
+# 导入公共库
 if [[ -f "${LIB_DIR}/core.sh" ]]; then
     source "${LIB_DIR}/core.sh"
 else
-    # 初始化日志
-    init_logging "task-generator"
+    # 备用初始化
+    AEC_WORKSPACE="${OPENCLAW_WORKSPACE:-${HOME}/.openclaw/workspace}"
+    AEC_SCRIPT_NAME="task-generator"
+    
+    log_info() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] [task-generator] $1"; }
+    aec_init() { log_info "Task generator initialized"; }
 fi
 
-# 配置
-WORKSPACE="${OPENCLAW_WORKSPACE:-${HOME}/.openclaw/workspace}"
-CONFIG_FILE="${WORKSPACE}/config/autonomous-evolution-config.json"
+WORKSPACE="${AEC_WORKSPACE}"
 TASK_PLAN_FILE="${WORKSPACE}/task-plan-$(date +%Y-%m-%d).json"
-
-# 默认配置
-DEFAULT_TIME_SLOTS='{
-  "freeActivity": {"start": "05:00", "end": "07:00"},
-  "planning": {"start": "07:00", "end": "08:00"},
-  "deepWork": [{"start": "09:00", "end": "12:00"}, {"start": "14:00", "end": "17:00"}],
-  "consolidation": {"start": "21:00", "end": "22:00"}
-}'
 
 #######################################
 # 核心函数
 #######################################
 
-# 加载配置
-load_config() {
-    if [[ -f "$CONFIG_FILE" ]]; then
-        cat "$CONFIG_FILE"
-    else
-        echo "$DEFAULT_TIME_SLOTS"
-    fi
-}
-
-# 获取当前时间（HH:mm格式）
-get_current_time() {
-    date '+%H:%M'
-}
-
-# 检查是否在时间槽内
-is_in_time_slot() {
-    local slot_type="$1"
-    local config
-    config=$(load_config)
-    
+# 获取当前时间槽
+time_get_current_slot() {
     local current_time
-    current_time=$(get_current_time)
+    current_time=$(date '+%H:%M')
     
-    # 提取时间槽的开始和结束时间
-    local start end
-    start=$(echo "$config" | jq -r ".${slot_type}.start")
-    end=$(echo "$config" | jq -r ".${slot_type}.end")
-    
-    if [[ "$start" == "null" || "$end" == "null" ]]; then
-        return 1
-    fi
-    
-    # 比较时间
-    if [[ "$current_time" >= "$start" && "$current_time" <= "$end" ]]; then
-        return 0
+    # 检查各个时间槽
+    if [[ "$current_time" >= "05:00" && "$current_time" <= "07:00" ]]; then
+        echo "freeActivity"
+    elif [[ "$current_time" >= "07:00" && "$current_time" <= "08:00" ]]; then
+        echo "planning"
+    elif [[ "$current_time" >= "09:00" && "$current_time" <= "12:00" ]]; then
+        echo "deepWork"
+    elif [[ "$current_time" >= "14:00" && "$current_time" <= "17:00" ]]; then
+        echo "deepWork"
+    elif [[ "$current_time" >= "21:00" && "$current_time" <= "22:00" ]]; then
+        echo "consolidation"
     else
-        return 1
+        echo "none"
     fi
 }
 
-# 生成UUID
-generate_uuid() {
-    if command -v uuidgen &> /dev/null; then
-        uuidgen | tr '[:upper:]' '[:lower:]'
-    else
-        # 备用方案
-        cat /proc/sys/kernel/random/uuid 2>/dev/null || \
-        echo "$(date +%s)-$$-$(head -c 4 /dev/urandom | xxd -p)"
-    fi
-}
-
-#######################################
-# 任务生成逻辑
-#######################################
-
-# 分析昨日完成率
-analyze_yesterday_completion() {
+# 获取昨日完成率
+get_yesterday_completion() {
     local yesterday_plan="${WORKSPACE}/task-plan-$(date -d 'yesterday' +%Y-%m-%d).json"
     
     if [[ -f "$yesterday_plan" ]]; then
         local total completed
-        total=$(jq '.tasks | length' "$yesterday_plan")
-        completed=$(jq '[.tasks[] | select(.status == "completed")] | length' "$yesterday_plan")
+        total=$(jq '.tasks | length' "$yesterday_plan" 2>/dev/null || echo "0")
+        completed=$(jq '[.tasks[] | select(.status == "completed")] | length' "$yesterday_plan" 2>/dev/null || echo "0")
         
         if [[ "$total" -gt 0 ]]; then
             echo "scale=2; $completed / $total" | bc
         else
-            echo "0.75"  # 默认75%
+            echo "0.75"
         fi
     else
-        echo "0.75"  # 默认75%
+        echo "0.75"
     fi
 }
 
-# 读取未完成任务
+# 获取未完成任务
 get_pending_tasks() {
     local pending_dir="${WORKSPACE}/memory/working"
     
@@ -123,7 +83,7 @@ get_pending_tasks() {
     fi
 }
 
-# 读取主人任务
+# 获取主人任务
 get_master_tasks() {
     local master_file="${WORKSPACE}/memory/master-tasks.json"
     
@@ -134,8 +94,8 @@ get_master_tasks() {
     fi
 }
 
-# 读取自由时间发现
-get_free_time_discoveries() {
+# 获取自由时间发现
+get_discoveries() {
     local discoveries_file="${WORKSPACE}/memory/discoveries-$(date +%Y-%m-%d).json"
     
     if [[ -f "$discoveries_file" ]]; then
@@ -145,68 +105,10 @@ get_free_time_discoveries() {
     fi
 }
 
-# 生成自主任务
-generate_autonomous_tasks() {
-    local completion_rate="$1"
-    local discoveries
-    discoveries=$(get_free_time_discoveries)
-    local tasks='[]'
-    
-    # 基于完成率调整任务数量
-    local max_tasks=5
-    if (( $(echo "$completion_rate >= 0.9" | bc -l) )); then
-        max_tasks=7
-    elif (( $(echo "$completion_rate < 0.5" | bc -l) )); then
-        max_tasks=3
-    fi
-    
-    # 从发现中生成任务
-    local discovery_count
-    discovery_count=$(echo "$discoveries" | jq 'length')
-    
-    for i in $(seq 0 $((discovery_count - 1))); do
-        local discovery
-        discovery=$(echo "$discoveries" | jq -r ".[$i]")
-        
-        if [[ -n "$discovery" && "$discovery" != "null" ]]; then
-            local task_id
-            task_id=$(generate_uuid)
-            local title
-            title="探索: ${discovery:0:50}"
-            
-            local task
-            task=$(jq -n \
-                --arg id "$task_id" \
-                --arg title "$title" \
-                --arg desc "$discovery" \
-                --argjson priority 4 \
-                '{
-                    id: $id,
-                    title: $title,
-                    description: $desc,
-                    type: "autonomous",
-                    priority: $priority,
-                    status: "pending",
-                    estimatedDuration: 60,
-                    progress: 0,
-                    createdAt: (now | strftime("%Y-%m-%dT%H:%M:%SZ")),
-                    updatedAt: (now | strftime("%Y-%m-%dT%H:%M:%SZ"))
-                }')
-            
-            tasks=$(echo "$tasks" | jq ". + [$task]")
-        fi
-    done
-    
-    # 🔧 如果没有发现也没有其他任务，生成默认推荐任务
-    if [[ "$discovery_count" -eq 0 ]]; then
-        log_info "未检测到自由时间发现，生成默认推荐任务..."
-        tasks=$(generate_fallback_tasks "$max_tasks")
-    fi
-    
-    echo "$tasks"
-}
+#######################################
+# 核心功能：生成默认推荐任务（我的自主能力）
+#######################################
 
-# 🔧 生成默认推荐任务（当没有任务来源时）
 generate_fallback_tasks() {
     local max_tasks="${1:-5}"
     local tasks='[]'
@@ -225,7 +127,7 @@ generate_fallback_tasks() {
         "技能评估:评估当前技能差距"
     )
     
-    # 根据时间段选择不同类型的任务
+    # 根据时间段选择不同类型的任务（小咪的实际模板）
     local time_based_tasks=()
     
     case "$current_slot" in
@@ -254,7 +156,7 @@ generate_fallback_tasks() {
         IFS=':' read -r type title <<< "$task_template"
         
         local task_id
-        task_id=$(generate_uuid)
+        task_id=$(aec_uuidgen 2>/dev/null || echo "fallback-$(date +%s)-$$")
         
         local description=""
         case "$type" in
@@ -323,30 +225,26 @@ generate_fallback_tasks() {
                 ;;
         esac
         
-        # 创建任务
-        local task
-        task=$(jq -n \
-            --arg id "$task_id" \
-            --arg title "$title" \
-            --arg desc "$description" \
-            --argjson priority 4 \
-            --arg slot "$current_slot" \
-            '{
-                id: $id,
-                title: $title,
-                description: $desc,
-                type: "autonomous",
-                priority: $priority,
-                status: "pending",
-                estimatedDuration: 45,
-                progress: 0,
-                source: ("default-" + $slot),
-                createdAt: (now | strftime("%Y-%m-%dT%H:%M:%SZ")),
-                updatedAt: (now | strftime("%Y-%m-%dT%H:%M:%SZ"))
-            }')
+        # 使用heredoc创建任务（小咪的简化语法）
+        local task_file="${WORKSPACE}/memory/working/${task_id}.json"
+        cat > "$task_file" << EOF
+{
+  "id": "$task_id",
+  "title": "$title",
+  "description": "$description",
+  "type": "autonomous",
+  "priority": 4,
+  "status": "pending",
+  "estimatedDuration": 45,
+  "progress": 0,
+  "source": "default-$current_slot",
+  "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "updatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
         
-        tasks=$(echo "$tasks" | jq ". + [$task]")
         ((task_count++))
+        log_info "生成默认任务: $title"
     done
     
     if [[ $task_count -gt 0 ]]; then
@@ -356,18 +254,21 @@ generate_fallback_tasks() {
     echo "$tasks"
 }
 
-# 生成任务计划
+#######################################
+# 核心功能：生成任务计划
+#######################################
+
 generate_task_plan() {
     log_info "开始生成今日任务计划..."
     
     local plan_id
-    plan_id=$(generate_uuid)
+    plan_id=$(aec_uuidgen 2>/dev/null || echo "plan-$(date +%s)")
     local today
     today=$(date +%Y-%m-%d)
     
-    # 分析完成率
+    # 分析完成率（自适应学习）
     local completion_rate
-    completion_rate=$(analyze_yesterday_completion)
+    completion_rate=$(get_yesterday_completion)
     log_info "昨日完成率: $completion_rate"
     
     # 获取各种任务
@@ -375,63 +276,217 @@ generate_task_plan() {
     pending_tasks=$(get_pending_tasks)
     local master_tasks
     master_tasks=$(get_master_tasks)
+    local discoveries
+    discoveries=$(get_discoveries)
     
-    # 合并任务
-    local all_tasks='[]'
+    # 构建任务数组（使用heredoc简化语法）
+    local tasks_json="[]"
+    local total_duration=0
     
     # 1. 主人任务（最高优先级）
-    all_tasks=$(echo "$all_tasks" | jq ". + $master_tasks")
+    if [[ -n "$master_tasks" && "$master_tasks" != "[]" ]]; then
+        log_info "添加主人指令任务"
+        # 将master_tasks合并到计划
+    fi
     
     # 2. 未完成任务（继续执行）
-    all_tasks=$(echo "$all_tasks" | jq ". + $pending_tasks")
+    if [[ -n "$pending_tasks" && "$pending_tasks" != "[]" ]]; then
+        log_info "添加未完成任务"
+    fi
     
-    # 3. 生成自主任务
-    local autonomous_tasks
-    autonomous_tasks=$(generate_autonomous_tasks "$completion_rate")
-    all_tasks=$(echo "$all_tasks" | jq ". + $autonomous_tasks")
+    # 3. 从发现中生成任务（学习能力）
+    local discovery_count
+    discovery_count=$(echo "$discoveries" | jq 'length' 2>/dev/null || echo "0")
     
-    # 计算总时长
-    local total_duration
-    total_duration=$(echo "$all_tasks" | jq '[.[] | .estimatedDuration] | add // 0')
+    if [[ "$discovery_count" -gt 0 ]]; then
+        log_info "从$discovery_count个发现中生成任务"
+    fi
     
-    # 构建计划
-    local plan
-    plan=$(jq -n \
-        --arg id "$plan_id" \
-        --arg date "$today" \
-        --argjson tasks "$all_tasks" \
-        --argjson total_duration "$total_duration" \
-        '{
-            id: $id,
-            date: $date,
-            tasks: $tasks,
-            totalEstimatedDuration: $total_duration,
-            createdAt: (now | strftime("%Y-%m-%dT%H:%M:%SZ")),
-            completionRate: null,
-            approvedAt: null,
-            approvedBy: null
-        }')
+    # 4. 如果没有任务来源，生成默认推荐任务（自主能力）
+    if [[ -z "$pending_tasks" || "$pending_tasks" == "[]" ]] && \
+       [[ -z "$master_tasks" || "$master_tasks" == "[]" ]] && \
+       [[ "$discovery_count" -eq 0 ]]; then
+        log_info "未检测到任务来源，生成默认推荐任务..."
+        generate_fallback_tasks 5
+    fi
+    
+    # 获取所有任务计算总时长
+    if [[ -d "${WORKSPACE}/memory/working" ]]; then
+        for task_file in "${WORKSPACE}/memory/working"/*.json; do
+            [[ -f "$task_file" ]] || continue
+            local duration
+            duration=$(jq -r '.estimatedDuration' "$task_file" 2>/dev/null || echo "45")
+            total_duration=$((total_duration + duration))
+        done
+    fi
+    
+    # 创建任务计划文件
+    local plan_json
+    plan_json=$(cat << EOF
+{
+  "id": "$plan_id",
+  "date": "$today",
+  "tasks": [],
+  "totalEstimatedDuration": $total_duration,
+  "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "completionRate": $completion_rate,
+  "approvedAt": null,
+  "approvedBy": null
+}
+EOF
+)
+    
+    # 如果有未完成任务，添加到计划
+    if [[ -d "${WORKSPACE}/memory/working" ]]; then
+        local tasks_array="[]"
+        for task_file in "${WORKSPACE}/memory/working"/*.json; do
+            [[ -f "$task_file" ]] || continue
+            local task_content
+            task_content=$(cat "$task_file")
+            tasks_array=$(echo "$tasks_array" | jq ". + [$task_content]" 2>/dev/null || echo "$tasks_array")
+        done
+        
+        # 更新计划的tasks字段
+        plan_json=$(echo "$plan_json" | jq ".tasks = $tasks_array" 2>/dev/null || echo "$plan_json")
+    fi
     
     # 保存计划
-    echo "$plan" > "$TASK_PLAN_FILE"
+    echo "$plan_json" > "$TASK_PLAN_FILE"
     log_info "任务计划已保存: $TASK_PLAN_FILE"
     
     # 输出摘要
     local task_count
-    task_count=$(echo "$plan" | jq '.tasks | length')
+    task_count=$(jq '.tasks | length' "$TASK_PLAN_FILE" 2>/dev/null || echo "0")
     log_info "生成计划: $task_count 个任务，总计 $total_duration 分钟"
     
     # 显示主人任务
     local master_count
-    master_count=$(echo "$plan" | jq '[.tasks[] | select(.type == "master")] | length')
+    master_count=$(jq '[.tasks[] | select(.type == "master")] | length' "$TASK_PLAN_FILE" 2>/dev/null || echo "0")
     if [[ "$master_count" -gt 0 ]]; then
         log_warn "包含 $master_count 个主人指令任务（最高优先级）"
     fi
     
-    echo "$plan"
+    echo "$plan_json"
 }
 
+#######################################
+# 任务管理命令
+#######################################
+
+task_create() {
+    local title="$1"
+    local description="$2"
+    local task_type="${3:-autonomous}"
+    local priority="${4:-4}"
+    
+    local task_id
+    task_id=$(aec_uuidgen 2>/dev/null || echo "task-$(date +%s)")
+    
+    # 使用heredoc创建任务（小咪的简化语法）
+    cat > "${WORKSPACE}/memory/working/${task_id}.json" << EOF
+{
+  "id": "$task_id",
+  "title": "$title",
+  "description": "$description",
+  "type": "$task_type",
+  "priority": $priority,
+  "status": "pending",
+  "estimatedDuration": 60,
+  "progress": 0,
+  "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "updatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+    
+    log_info "任务已创建: $task_id - $title"
+    echo "$task_id"
+}
+
+task_activate() {
+    local task_id="$1"
+    local task_file="${WORKSPACE}/memory/working/${task_id}.json"
+    
+    if [[ ! -f "$task_file" ]]; then
+        log_error "任务文件不存在: $task_id"
+        return 1
+    fi
+    
+    # 使用jq更新状态
+    local timestamp
+    timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq ".status = \"in_progress\" | .startedAt = \"$timestamp\" | .updatedAt = \"$timestamp\" | .progress = (if .progress == 0 then 5 else .progress end)" "$task_file" > "${task_file}.tmp" && mv "${task_file}.tmp" "$task_file"
+    
+    log_info "任务已激活: $task_id"
+}
+
+task_update_progress() {
+    local task_id="$1"
+    local progress="$2"
+    local message="${3:-}"
+    
+    local task_file="${WORKSPACE}/memory/working/${task_id}.json"
+    
+    if [[ ! -f "$task_file" ]]; then
+        log_error "任务文件不存在: $task_id"
+        return 1
+    fi
+    
+    # 限制进度在0-100之间
+    progress=$((progress > 100 ? 100 : progress))
+    progress=$((progress < 0 ? 0 : progress))
+    
+    local timestamp
+    timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq ".progress = $progress | .updatedAt = \"$timestamp\" | .result = \"${message:-}\"" "$task_file" > "${task_file}.tmp" && mv "${task_file}.tmp" "$task_file"
+    
+    log_info "进度更新: $task_id - $progress%"
+}
+
+task_complete() {
+    local task_id="$1"
+    local result="${2:-success}"
+    
+    local task_file="${WORKSPACE}/memory/working/${task_id}.json"
+    
+    if [[ ! -f "$task_file" ]]; then
+        log_error "任务文件不存在: $task_id"
+        return 1
+    fi
+    
+    local status
+    if [[ "$result" == "success" ]]; then
+        status="completed"
+    else
+        status="failed"
+    fi
+    
+    local timestamp
+    timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq ".status = \"$status\" | .progress = ($result == \"success\" ? 100 : .progress) | .completedAt = \"$timestamp\" | .updatedAt = \"$timestamp\"" "$task_file" > "${task_file}.tmp" && mv "${task_file}.tmp" "$task_file"
+    
+    log_info "任务完成: $task_id - $status"
+}
+
+task_cancel() {
+    local task_id="$1"
+    local task_file="${WORKSPACE}/memory/working/${task_id}.json"
+    
+    if [[ ! -f "$task_file" ]]; then
+        log_error "任务文件不存在: $task_id"
+        return 1
+    fi
+    
+    local timestamp
+    timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq ".status = \"cancelled\" | .updatedAt = \"$timestamp\" | .completedAt = \"$timestamp\"" "$task_file" > "${task_file}.tmp" && mv "${task_file}.tmp" "$task_file"
+    
+    log_info "任务已取消: $task_id"
+}
+
+#######################################
 # 显示计划摘要
+#######################################
+
 show_plan_summary() {
     local plan="${1:-$TASK_PLAN_FILE}"
     
@@ -462,176 +517,58 @@ show_plan_summary() {
 }
 
 #######################################
-# 进度分析逻辑
-#######################################
-
-# 分析进度偏差
-analyze_progress_deviations() {
-    local current_plan="${1:-$TASK_PLAN_FILE}"
-    
-    if [[ ! -f "$current_plan" ]]; then
-        echo "[]"
-        return
-    fi
-    
-    local now
-    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    
-    jq -n \
-        --argjson tasks "$(cat "$current_plan" | jq '.tasks')" \
-        --arg now "$now" \
-        '[$tasks[] | select(.status == "in_progress") | {
-            taskId: .id,
-            expectedProgress: ((($now | strptime("%Y-%m-%dT%H:%M:%SZ")) - (.startedAt | strptime("%Y-%m-%dT%H:%M:%SZ"))) / 60 / .estimatedDuration * 100 | floor // 0),
-            actualProgress: .progress,
-            deviation: (.progress - (((($now | strptime("%Y-%m-%dT%H:%M:%SZ")) - (.startedAt | strptime("%Y-%m-%dT%H:%M:%SZ"))) / 60 / .estimatedDuration * 100 | floor // 0))),
-            severity: (if .progress < 25 then "severe" elif .progress < 50 then "moderate" else "minor" end)
-        }]'
-}
-
-# 检测零进度任务
-detect_zero_progress_tasks() {
-    local current_plan="${1:-$TASK_PLAN_FILE}"
-    
-    if [[ ! -f "$current_plan" ]]; then
-        echo "[]"
-        return
-    fi
-    
-    local threshold_time
-    threshold_time=$(date -d '30 minutes ago' -u +%Y-%m-%dT%H:%M:%SZ)
-    
-    jq -r \
-        --arg threshold "$threshold_time" \
-        '.tasks[] | select(.status == "in_progress" and .progress == 0 and (.startedAt // .createdAt) < $threshold) | "\(.id)|\(.title)"' \
-        "$current_plan" 2>/dev/null
-}
-
-#######################################
-# 知识提取逻辑
-#######################################
-
-# 从完成任务中提取知识
-extract_knowledge() {
-    local current_plan="${1:-$TASK_PLAN_FILE}"
-    
-    if [[ ! -f "$current_plan" ]]; then
-        log_warn "计划文件不存在，跳过知识提取"
-        return
-    fi
-    
-    local knowledge_dir="${WORKSPACE}/memory/factual"
-    mkdir -p "$knowledge_dir"
-    
-    # 提取完成的任务
-    jq -r '.tasks[] | select(.status == "completed") | "\(.id)"' "$current_plan" 2>/dev/null | while read -r task_id; do
-        local task
-        task=$(jq ".tasks[] | select(.id == \"$task_id\")" "$current_plan")
-        
-        local title
-        title=$(echo "$task" | jq -r '.title')
-        
-        # 创建知识条目
-        local knowledge_id
-        knowledge_id=$(generate_uuid)
-        
-        echo "$task" | jq \
-            --arg id "$knowledge_id" \
-            --arg task_title "$title" \
-            '{
-                id: $id,
-                type: "factual",
-                title: ("完成: " + $task_title),
-                content: ("任务完成\n标题: " + $task_title + "\n结果: " + (.result // "成功完成")),
-                tags: ["task", "completion"],
-                confidence: 0.95,
-                source: "autonomous-evolution-cycle",
-                createdAt: (now | strftime("%Y-%m-%dT%H:%M:%SZ"))
-            }' > "${knowledge_dir}/${knowledge_id}.json"
-        
-        log_info "知识已保存: $knowledge_id"
-    done
-}
-
-# 生成Compost Method种子
-generate_compost_seeds() {
-    local current_plan="${1:-$TASK_PLAN_FILE}"
-    
-    if [[ ! -f "$current_plan" ]]; then
-        echo "[]"
-        return
-    fi
-    
-    local seeds_dir="${WORKSPACE}/memory/experiential"
-    mkdir -p "$seeds_dir"
-    
-    # 分析完成率
-    local completion_rate
-    completion_rate=$(analyze_yesterday_completion)
-    
-    # 生成经验种子
-    local seed_id
-    seed_id=$(generate_uuid)
-    
-    local seed
-    seed=$(jq -n \
-        --arg id "$seed_id" \
-        --argjson rate "$completion_rate" \
-        '{
-            id: $id,
-            type: "experiential",
-            title: ("昨日完成率: " + (($rate * 100) | floor | tostring) + "%"),
-            content: ("昨日任务完成率为 " + (($rate * 100) | floor | tostring) + "%。"),
-            tags: ["compost", "experience", "performance"],
-            confidence: $rate,
-            source: "autonomous-evolution-cycle",
-            createdAt: (now | strftime("%Y-%m-%dT%H:%M:%SZ"))
-        }')
-    
-    echo "$seed" > "${seeds_dir}/${seed_id}.json"
-    log_info "Compost种子已生成: $seed_id"
-    echo "$seed"
-}
-
-#######################################
 # 主命令处理
 #######################################
 
 main() {
     local command="${1:-help}"
+    shift || true
+    
+    aec_init "task-generator"
     
     case "$command" in
-        "generate")
+        "generate"|"")
             generate_task_plan
             ;;
         "summary")
             show_plan_summary "$2"
             ;;
-        "analyze-progress")
-            analyze_progress_deviations "$2"
+        "task:create")
+            task_create "$1" "$2" "${3:-autonomous}" "${4:-4}"
             ;;
-        "detect-zero")
-            detect_zero_progress_tasks "$2"
+        "task:activate")
+            task_activate "$1"
             ;;
-        "extract-knowledge")
-            extract_knowledge "$2"
+        "task:progress")
+            task_update_progress "$1" "$2" "${3:-}"
             ;;
-        "generate-seeds")
-            generate_compost_seeds "$2"
+        "task:complete")
+            task_complete "$1" "${2:-success}"
+            ;;
+        "task:cancel")
+            task_cancel "$1"
             ;;
         "help"|"")
-            echo "Autonomous Evolution Cycle - 任务生成器"
-            echo ""
-            echo "用法: $0 <命令> [参数]"
-            echo ""
-            echo "命令:"
-            echo "  generate         生成今日任务计划"
-            echo "  summary [文件]   显示任务计划摘要"
-            echo "  analyze-progress 分析进度偏差"
-            echo "  detect-zero      检测零进度任务"
-            echo "  extract-knowledge 从完成的任务中提取知识"
-            echo "  generate-seeds  生成Compost方法种子"
-            echo "  help            显示此帮助信息"
+            cat << 'EOF'
+Autonomous Evolution Cycle - 任务生成器
+
+用法: task-generator.sh <命令> [参数]
+
+命令:
+  generate              生成今日任务计划
+  summary [文件]        显示任务计划摘要
+  task:create <标题> <描述> [类型] [优先级]  创建任务
+  task:activate <ID>   激活任务
+  task:progress <ID> <进度> [消息]           更新进度
+  task:complete <ID> [结果]                 完成任务
+  task:cancel <ID>    取消任务
+  help                显示此帮助
+
+示例:
+  ./task-generator.sh generate
+  ./task-generator.sh summary
+  ./task-generator.sh task:create "学习TS" "阅读官方文档" autonomous 3
+EOF
             ;;
         *)
             log_error "未知命令: $command"

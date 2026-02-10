@@ -1,6 +1,7 @@
 #!/bin/bash
 # Autonomous Evolution Cycle - 主入口脚本
 # 整合所有功能，提供统一CLI
+# 合并版：保留自主能力 + 简化语法 + 实际任务模板
 
 set -euo pipefail
 
@@ -42,7 +43,7 @@ NC='\033[0m'
 show_help() {
     cat << 'EOF'
 ╔═══════════════════════════════════════════════════════════════╗
-║          Autonomous Evolution Cycle v2.0                       ║
+║          Autonomous Evolution Cycle v2.0                   ║
 ║          自主演化周期 - OpenClaw AI助手Skill                    ║
 ╚═══════════════════════════════════════════════════════════════╝
 
@@ -65,7 +66,7 @@ show_help() {
 📊 分析与报告:
   analyze                 分析进度偏差
   health                  计算健康度评分
-  report                  生成完整报告
+  report                 生成完整报告
   heartbeat               执行Heartbeat检查
 
 🧠 知识管理:
@@ -107,9 +108,9 @@ EOF
 show_version() {
     cat << 'EOF'
 Autonomous Evolution Cycle v2.0.0
-Author: xiaomi_cat
+Author: xiaomi_cat & xiaomii (主人的助手)
 License: MIT
-Homepage: https://github.com/Firo718/Autonomous-Evolution-Cycle
+Homepage: https://github.com/Firo718/ForTrae
 
 Powered by OpenClaw 🦞
 EOF
@@ -127,7 +128,7 @@ cmd_init() {
     echo "📁 创建目录结构..."
     mkdir -p "${WORKSPACE}"/{config,memory/{working,factual,experiential,patterns},logs}
     
-    # 创建默认配置
+    # 创建默认配置（简化版）
     echo "⚙️  创建默认配置..."
     cat > "${WORKSPACE}/config/autonomous-evolution-config.json" << 'EOF'
 {
@@ -239,7 +240,7 @@ cmd_status() {
     if [[ "$in_progress" -gt 0 ]]; then
         echo ""
         echo -e "${GREEN}🔄 进行中任务:${NC}"
-        jq -r '.tasks[] | select(.status == "in_progress") | "  - [\( .progress )%%] \( .title )"' "$today_plan" 2>/dev/null | head -5
+        jq -r '.tasks[] | select(.status == "in_progress") | "  - [\( .progress )%] \( .title )"' "$today_plan" 2>/dev/null | head -5
     fi
 }
 
