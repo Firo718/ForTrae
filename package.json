@@ -1,0 +1,21 @@
+{
+  "name": "skill-extractor",
+  "version": "1.0.0",
+  "description": "从大模型输出中抽取OpenClaw规范skill的自动化工具。支持从文本、文件、URL和对话历史中提取skill结构，自动生成符合OpenClaw规范的SKILL.md文件。",
+  "main": "SKILL.md",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "openclaw",
+    "skill",
+    "extractor",
+    "ai",
+    "automation"
+  ],
+  "author": "Autonomous Evolution Cycle",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}
